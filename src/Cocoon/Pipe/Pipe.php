@@ -25,8 +25,8 @@ class Pipe implements RequestHandlerInterface
      */
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-         $requestHandler = new Handler($this->get());
-         return $requestHandler->handle($request);
+        $requestHandler = new Handler($this->get());
+        return $requestHandler->handle($request);
     }
     /**
      * Ajoute un ou plusieurs middleware

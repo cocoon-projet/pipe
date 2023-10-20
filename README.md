@@ -13,7 +13,7 @@ composer require cocoon-projet/pipe
 ```
 ## Pré-requis
 
-Php version 7.1.0 ou plus
+Php version 8.0 
 
 ## Utilisation
 

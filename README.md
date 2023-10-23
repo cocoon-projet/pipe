@@ -1,3 +1,5 @@
+[![codecov](https://codecov.io/gh/cocoon-projet/pipe/graph/badge.svg?token=9WRAP2DM39)](https://codecov.io/gh/cocoon-projet/pipe) [![PHP Composer](https://github.com/cocoon-projet/pipe/actions/workflows/ci.yml/badge.svg)](https://github.com/cocoon-projet/pipe/actions/workflows/ci.yml) 
+
 # Cocoon-projet/pipe
 
 ## A Propos

@@ -1,1 +1,0 @@
-{"version":1,"defects":[],"times":{"Pipe\\PipeTest::testAddStringMiddleware":0.018,"Pipe\\PipeTest::testAddInstanceMiddleware":0.003,"Pipe\\PipeTest::testAddByArrayMiddleware":0.002,"Pipe\\PipeTest::testAddEmptyMiddleware":0.002,"Pipe\\PipeTest::testBadMiddleware":0.003,"Pipe\\PipeTest::testQueueMiddleware":0.003}}

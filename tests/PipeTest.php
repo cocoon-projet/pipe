@@ -1,63 +1,318 @@
 <?php
-namespace Pipe;
+
+declare(strict_types=1);
+
+namespace Tests;
 
 use Cocoon\Pipe\Pipe;
-use InvalidArgumentException;
-use Laminas\Diactoros\ServerRequestFactory;
+use Cocoon\Pipe\Attribute\Priority;
+use Cocoon\Pipe\Attribute\Route;
+use Cocoon\Pipe\Conditional\ConditionalMiddlewareInterface;
 use PHPUnit\Framework\TestCase;
-use RuntimeException;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Psr\Http\Server\MiddlewareInterface;
+use Psr\Http\Server\RequestHandlerInterface;
+use Laminas\Diactoros\ServerRequest;
+use Laminas\Diactoros\Response;
+use Laminas\Diactoros\Uri;
 
 class PipeTest extends TestCase
 {
-    public function testAddStringMiddleware()
+    private Pipe $pipe;
+    private ServerRequestInterface $request;
+
+    protected function setUp(): void
     {
-        $pipe = new Pipe();
-        $pipe->add(OneMiddleware::class);
-        $result = $pipe->handle(ServerRequestFactory::fromGlobals());
-        $this->assertSame('add middleware', (string) $result->getBody());
+        $this->pipe = new Pipe();
+        $this->request = new ServerRequest(
+            [],
+            [],
+            'http://localhost/test',
+            'GET'
+        );
     }
 
-    public function testAddInstanceMiddleware()
+    public function testBasicMiddlewareExecution(): void
     {
-        $pipe = new Pipe();
-        $pipe->add(new OneMiddleware());
-        $result = $pipe->handle(ServerRequestFactory::fromGlobals());
-        $this->assertSame('add middleware', (string) $result->getBody());
+        $middleware = new class implements MiddlewareInterface {
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $response = $handler->handle($request);
+                return $response->withHeader('X-Test', 'executed');
+            }
+        };
+
+        $this->pipe->add($middleware);
+        $response = $this->pipe->handle($this->request);
+
+        $this->assertTrue($response->hasHeader('X-Test'));
+        $this->assertEquals(['executed'], $response->getHeader('X-Test'));
     }
 
-    public function testAddByArrayMiddleware()
+    public function testPriorityMiddlewareExecution(): void
     {
-        $pipe = new Pipe();
-        $pipe->add([new OneMiddleware()]);
-        $result = $pipe->handle(ServerRequestFactory::fromGlobals());
-        $this->assertSame('add middleware', (string) $result->getBody());
+        $executionOrder = new ExecutionOrderTracker();
+
+        $lowPriority = new class($executionOrder) implements MiddlewareInterface {
+            private ExecutionOrderTracker $tracker;
+
+            public function __construct(ExecutionOrderTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->add('low');
+                return $handler->handle($request);
+            }
+        };
+
+        $highPriority = new #[Priority(100)] class($executionOrder) implements MiddlewareInterface {
+            private ExecutionOrderTracker $tracker;
+
+            public function __construct(ExecutionOrderTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->add('high');
+                return $handler->handle($request);
+            }
+        };
+
+        $this->pipe->add($lowPriority);
+        $this->pipe->add($highPriority);
+        $this->pipe->handle($this->request);
+
+        $this->assertEquals(['high', 'low'], $executionOrder->getOrder());
     }
-    public function testAddEmptyMiddleware()
+
+    public function testRouteMiddlewareExecution(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('$middelware ne doit pas être vide');
+        $executionTracker = new ExecutionTracker();
+
+        $routeMiddleware = new #[Route('test/*')] class($executionTracker) implements MiddlewareInterface {
+            private ExecutionTracker $tracker;
+
+            public function __construct(ExecutionTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->markExecuted();
+                return $handler->handle($request);
+            }
+        };
+
+        $this->pipe->add($routeMiddleware);
         
-        $pipe = new Pipe();
-        $pipe->add([]);
-        $pipe->handle(ServerRequestFactory::fromGlobals());
+        // Test matching route
+        $request = $this->request->withUri(new Uri('http://localhost/test/users'));
+        $this->pipe->handle($request);
+        $this->assertTrue($executionTracker->wasExecuted());
+
+        // Test non-matching route
+        $executionTracker->reset();
+        $request = $this->request->withUri(new Uri('http://localhost/other/path'));
+        $this->pipe->handle($request);
+        $this->assertFalse($executionTracker->wasExecuted());
     }
 
-    public function testBadMiddleware()
+    public function testConditionalMiddlewareExecution(): void
     {
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('le middleware doit implementer l\'interface MiddelwareInterface');
+        $executionTracker = new ExecutionTracker();
 
-        $pipe = new Pipe();
-        $pipe->add(BadMiddleware::class);
-        $pipe->handle(ServerRequestFactory::fromGlobals());
+        $conditionalMiddleware = new class($executionTracker) implements MiddlewareInterface, ConditionalMiddlewareInterface {
+            private ExecutionTracker $tracker;
+
+            public function __construct(ExecutionTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->markExecuted();
+                return $handler->handle($request);
+            }
+
+            public function shouldExecute(ServerRequestInterface $request): bool
+            {
+                return $request->hasHeader('X-Execute');
+            }
+        };
+
+        $this->pipe->add($conditionalMiddleware);
+
+        // Test with condition met
+        $request = $this->request->withHeader('X-Execute', 'true');
+        $this->pipe->handle($request);
+        $this->assertTrue($executionTracker->wasExecuted());
+
+        // Test with condition not met
+        $executionTracker->reset();
+        $this->pipe->handle($this->request);
+        $this->assertFalse($executionTracker->wasExecuted());
     }
 
-    public function testQueueMiddleware()
+    public function testComplexMiddlewareChain(): void
     {
-        $pipe = new Pipe();
-        $pipe->add([TwoMiddleware::class, new OneMiddleware()]);
-        $result = $pipe->handle(ServerRequestFactory::fromGlobals());
-        $this->assertSame('add middleware hello', (string) $result->getBody());
+        $executionOrder = new ExecutionOrderTracker();
+
+        // Priority middleware
+        $firstMiddleware = new #[Priority(100)] class($executionOrder) implements MiddlewareInterface {
+            private ExecutionOrderTracker $tracker;
+
+            public function __construct(ExecutionOrderTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->add('first');
+                return $handler->handle($request);
+            }
+        };
+
+        // Route middleware
+        $secondMiddleware = new #[Route('test/*', methods: ['GET'])] class($executionOrder) implements MiddlewareInterface {
+            private ExecutionOrderTracker $tracker;
+
+            public function __construct(ExecutionOrderTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->add('second');
+                return $handler->handle($request);
+            }
+        };
+
+        // Conditional middleware
+        $thirdMiddleware = new class($executionOrder) implements MiddlewareInterface, ConditionalMiddlewareInterface {
+            private ExecutionOrderTracker $tracker;
+
+            public function __construct(ExecutionOrderTracker $tracker)
+            {
+                $this->tracker = $tracker;
+            }
+
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $this->tracker->add('third');
+                return $handler->handle($request);
+            }
+
+            public function shouldExecute(ServerRequestInterface $request): bool
+            {
+                return $request->hasHeader('X-Execute');
+            }
+        };
+
+        $this->pipe->add($thirdMiddleware)
+                  ->add($secondMiddleware)
+                  ->add($firstMiddleware);
+
+        $request = $this->request
+            ->withUri(new Uri('http://localhost/test/users'))
+            ->withHeader('X-Execute', 'true');
+
+        $this->pipe->handle($request);
+
+        $this->assertEquals(['first', 'second', 'third'], $executionOrder->getOrder());
     }
 
+    public function testEmptyPipeReturnsDefaultResponse(): void
+    {
+        $response = $this->pipe->handle($this->request);
+        $this->assertInstanceOf(ResponseInterface::class, $response);
+        $this->assertEquals(200, $response->getStatusCode());
+    }
+
+    public function testMiddlewareCanModifyResponse(): void
+    {
+        $middleware = new class implements MiddlewareInterface {
+            public function process(
+                ServerRequestInterface $request,
+                RequestHandlerInterface $handler
+            ): ResponseInterface {
+                $response = $handler->handle($request);
+                return $response
+                    ->withStatus(404)
+                    ->withHeader('X-Custom', 'value');
+            }
+        };
+
+        $this->pipe->add($middleware);
+        $response = $this->pipe->handle($this->request);
+
+        $this->assertEquals(404, $response->getStatusCode());
+        $this->assertEquals(['value'], $response->getHeader('X-Custom'));
+    }
 }
+
+/**
+ * Classe utilitaire pour suivre l'ordre d'exécution des middlewares
+ */
+class ExecutionOrderTracker
+{
+    private array $order = [];
+
+    public function add(string $step): void
+    {
+        $this->order[] = $step;
+    }
+
+    public function getOrder(): array
+    {
+        return $this->order;
+    }
+}
+
+/**
+ * Classe utilitaire pour suivre l'exécution d'un middleware
+ */
+class ExecutionTracker
+{
+    private bool $executed = false;
+
+    public function markExecuted(): void
+    {
+        $this->executed = true;
+    }
+
+    public function wasExecuted(): bool
+    {
+        return $this->executed;
+    }
+
+    public function reset(): void
+    {
+        $this->executed = false;
+    }
+} 

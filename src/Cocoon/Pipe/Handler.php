@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 namespace Cocoon\Pipe;
 
 use Iterator;
@@ -9,101 +11,61 @@ use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use RuntimeException;
 
-class Handler implements iterator, RequestHandlerInterface
+final class Handler implements Iterator, RequestHandlerInterface
 {
-    /**
-     * @var array
-     */
-    private $middleware = [];
-    /**
-     * @var int
-     */
-    private $position;
+    /** @var array<int, MiddlewareItem> */
+    private array $middleware;
+    
+    private int $position;
 
     /**
-     * Handler constructor.
-     * @param array $middlewares
+     * @param array<int, MiddlewareItem> $middlewares
      */
-    public function __construct($middlewares = [])
+    public function __construct(array $middlewares = [])
     {
-        $this->rewind();
         $this->middleware = $middlewares;
+        $this->rewind();
     }
-    /**
-     * @inheritDoc
-     */
+
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-        $middleware = $this->get();
+        $middlewareItem = $this->get();
         $this->next();
 
-        if (null === $middleware) {
+        if ($middlewareItem === null) {
             return new Response();
         }
-        if ($middleware instanceof MiddlewareInterface) {
-            return $middleware->process($request, $this);
-        } else {
-            throw new RuntimeException('le middleware doit implementer l\'interface MiddelwareInterface');
-        }
+
+        $middleware = $middlewareItem->getMiddleware();
+        return $middleware->process($request, $this);
     }
 
-    /**
-     * Retourne le middleware courrant
-     * a
-     * @return mixed|null
-     */
-    private function get()
+    private function get(): ?MiddlewareItem
     {
-        if ($this->valid()) {
-            return $this->current();
-        }
-        return null;
+        return $this->valid() ? $this->current() : null;
     }
 
-    /**
-     * Pour passer au middleware suivant
-     *
-     * @return int
-     */
-    public function next()
+    public function next(): void
     {
-        return $this->position++;
+        $this->position++;
     }
 
-    /**
-     * The current midlleware
-     *
-     * @return MiddlewareInterface
-     */
-    public function current()
+    public function current(): MiddlewareItem
     {
         return $this->middleware[$this->key()];
     }
 
-    /**
-     * current key of middleware
-     *
-     * @return int
-     */
-    public function key()
+    public function key(): int
     {
         return $this->position;
     }
 
-    /**
-     * a valid middleware
-     *
-     * @return bool
-     */
-    public function valid()
+    public function valid(): bool
     {
         return isset($this->middleware[$this->position]);
     }
 
-    /**
-     * rewind middleware position
-     */
-    public function rewind()
+    public function rewind(): void
     {
         $this->position = 0;
     }

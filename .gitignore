@@ -1,5 +1,13 @@
 /vendor
 /.idea
 /.vscode
+/app
+/public
 composer.lock
 .phpunit.result.cache
+/logs/
+/temp/
+*.log
+index.php
+index_old.php
+.htaccess

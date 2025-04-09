@@ -1,11 +1,14 @@
 <?php
 
+declare(strict_types=1);
 
 namespace Cocoon\Pipe;
 
+use Cocoon\Pipe\Handler\DefaultHandler;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 
 /**
@@ -14,37 +17,38 @@ use Psr\Http\Server\RequestHandlerInterface;
  * Class Pipe
  * @package Cocoon\Pipe
  */
-class Pipe implements RequestHandlerInterface
+final class Pipe implements RequestHandlerInterface
 {
-    /**
-     * @var array
-     */
-    private $middleware = [];
+    /** @var MiddlewareItem[] */
+    private array $middlewares = [];
+    private RequestHandlerInterface $fallbackHandler;
+
+    public function __construct(?RequestHandlerInterface $fallbackHandler = null)
+    {
+        $this->fallbackHandler = $fallbackHandler ?? new DefaultHandler();
+    }
+
     /**
      * @inheritDoc
      */
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-        $requestHandler = new Handler($this->get());
-        return $requestHandler->handle($request);
+        $handler = $this->createHandler();
+        return $handler->handle($request);
     }
+
     /**
      * Ajoute un ou plusieurs middleware
      *
-     * @param string|array $middleware
+     * @param MiddlewareInterface|string $middleware
+     * @param int|null $priority Priorité du middleware (plus le nombre est élevé, plus la priorité est haute)
+     * @throws InvalidArgumentException Si le middleware est vide ou invalide
      */
-    public function add($middleware)
+    public function add(MiddlewareInterface|string $middleware): self
     {
-        if (empty($middleware)) {
-            throw new InvalidArgumentException('$middelware ne doit pas être vide');
-        }
-        if (is_array($middleware)) {
-            foreach ($middleware as $mdl) {
-                $this->resolve($mdl);
-            }
-        } else {
-            $this->resolve($middleware);
-        }
+        $this->resolve($middleware);
+        $this->sortMiddlewares();
+        return $this;
     }
 
     /**
@@ -54,20 +58,76 @@ class Pipe implements RequestHandlerInterface
      */
     private function get()
     {
-        return $this->middleware;
+        return $this->middlewares;
     }
 
     /**
      * Instancie ou pas un middleware
      *
-     * @param string|object $middleware
+     * @param MiddlewareInterface|string $middleware
+     * @param int|null $priority
+     * @throws InvalidArgumentException Si la classe du middleware n'implémente pas MiddlewareInterface
      */
-    private function resolve($middleware)
+    private function resolve(MiddlewareInterface|string $middleware, ?int $priority = null): void
     {
         if (is_string($middleware)) {
-            $this->middleware[] = new $middleware;
+            if (!class_exists($middleware)) {
+                throw new InvalidArgumentException(
+                    sprintf('La classe middleware "%s" n\'existe pas', $middleware)
+                );
+            }
+
+            $instance = new $middleware();
+            
+            if (!$instance instanceof MiddlewareInterface) {
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'La classe middleware "%s" doit implémenter l\'interface %s',
+                        $middleware,
+                        MiddlewareInterface::class
+                    )
+                );
+            }
+
+            $this->middlewares[] = new MiddlewareItem($instance);
         } else {
-            $this->middleware[] = $middleware;
+            $this->middlewares[] = new MiddlewareItem($middleware);
         }
+    }
+
+    /**
+     * Trie les middlewares par priorité (du plus prioritaire au moins prioritaire)
+     */
+    private function sortMiddlewares(): void
+    {
+        usort($this->middlewares, static function (MiddlewareItem $a, MiddlewareItem $b): int {
+            return $a->getPriority() <=> $b->getPriority();
+        });
+    }
+
+    private function createHandler(): RequestHandlerInterface
+    {
+        $handler = $this->fallbackHandler;
+        foreach ($this->middlewares as $middleware) {
+            $handler = new class($middleware, $handler) implements RequestHandlerInterface {
+                private MiddlewareItem $middleware;
+                private RequestHandlerInterface $handler;
+
+                public function __construct(MiddlewareItem $middleware, RequestHandlerInterface $handler)
+                {
+                    $this->middleware = $middleware;
+                    $this->handler = $handler;
+                }
+
+                public function handle(ServerRequestInterface $request): ResponseInterface
+                {
+                    if ($this->middleware->shouldExecute($request)) {
+                        return $this->middleware->process($request, $this->handler);
+                    }
+                    return $this->handler->handle($request);
+                }
+            };
+        }
+        return $handler;
     }
 }
